@@ -1,0 +1,759 @@
+Tổng quan bài Lab
+Về bài lab này
+Finetune mô hình Vision-Language Model Qwen3-VL-4B bằng kỹ thuật QLoRA trên Google Colab T4 để phát hiện và định vị hư hại mặt đường (pothole, crack, manhole) dạng grounding JSON thang 0–1000, thực hiện ablation study và tối ưu hóa bằng GRPO.
+
+Cần chuẩn bị
+
+    Python 3.10–3.12, kiến thức nền tảng về PyTorch, Hugging Face Transformers và PEFT.
+    Hiểu biết về kiến trúc Transformer, Vision Transformer (ViT), cơ chế Attention và phương pháp thích ứng tham số hiệu quả LoRA/QLoRA.
+    Tài khoản Google Colab (sử dụng GPU T4 16 GB miễn phí) và tài khoản Kaggle để lấy khóa API tải dữ liệu.
+    Git
+    Google Colab (GPU T4)
+    Python 3.10+
+    Hugging Face Transformers 5.19.0, PEFT 0.21.2, TRL 1.9.2, BitsAndBytes 0.50.2
+
+Kho mã nguồn bài Lab chính thức trên GitHub: https://github.com/VinUni-AI20k/K4-Track-4-Day10-VisionLanguageModel
+
+Bài thực hành Lab Day 10: Finetune Qwen3-VL-4B (LoRA) để định vị hư hại mặt đường thuộc Track 4 (Nhãn, auto-labeling và Vision–Language Model). Đây là bài thực hành cá nhân, được thiết kế để hoàn thành trong khoảng 4 giờ trên môi trường Google Colab T4 (16 GB VRAM miễn phí).
+
+Trong bài toán này, bạn sẽ đóng vai trò một kỹ sư AI xây dựng hệ thống tự động gán nhãn và định vị hư hại hạ tầng giao thông từ camera hành trình (dashcam). Mô hình nhận đầu vào là ảnh kích thước 640 × 360 và sinh ra chuỗi JSON chứa danh sách các bounding box thuộc 3 lớp hư hại:
+
+    pothole: Ổ gà trên mặt đường.
+    crack: Vết nứt bề mặt đường.
+    manhole: Nắp cống / hố ga.
+
+Định dạng đầu ra chuẩn tuân theo quy ước visual grounding của Qwen3-VL:
+
+[{"label": "pothole", "bbox_2d": [x1, y1, x2, y2]}]
+
+
+Trong đó, toạ độ (x1, y1, x2, y2) là các số nguyên trên thang đo chuẩn hoá 0–1000 tương đối so với chiều rộng và chiều cao của khung hình.
+Cơ cấu đánh giá và điểm số
+
+Thang điểm chính thức gồm 100 điểm chuẩn và 10 điểm thưởng (Bonus) theo tệp RUBRIC.md:
+Phần	Điểm	Nội dung chính
+A. Kết quả chạy tự động	40	Kiểm tra tự động qua scripts/check_submission.py: đủ 4 file bằng chứng e0.json–e3.json và ít nhất một file e4*.json; metadata huấn luyện hợp lệ; parse_valid_rate của E1 ≥ 0.95; F1 của E1 vượt E0 ít nhất 0.10.
+B. Thí nghiệm và bằng chứng	20	Bảng tổng hợp số liệu khớp 100% với file evidence; tối thiểu 6 ảnh minh họa dự đoán đúng/sai có vẽ box; ablation E4 sạch (chỉ đổi 1 biến); nhật ký tài nguyên VRAM/thời gian trung thực.
+C. Báo cáo chuyên sâu	30	Trả lời 10 câu hỏi trong REPORT.md (3 điểm/câu) dựa trên số liệu thật của chính bạn. Chấm kỹ các câu 3 (thang 0–1000), 4 (mask loss), 6 (chia theo session), 8 (CI95 tập test nhỏ).
+D. Git và trình bày	10	Tối thiểu 5 commit chia theo từng bước; repository sạch (không commit dữ liệu data/, thư mục tạm work/, file .env, file trọng số *.pt/*.safetensors); check_submission.py đạt 0 FAIL.
+Bonus E5 (Tùy chọn)	+10	Hiện thực thuật toán RL GRPO với reward IoU: hàm reward chuẩn có unit test (4đ), nhật ký huấn luyện GRPO (3đ), phân tích reward hacking và so sánh với SFT kèm CI95 (3đ). Tổng điểm tối đa không vượt quá 110.
+Quy định kỷ luật và trừ điểm
+
+    Không sửa scripts/ và tests/ của đề bài: Hệ thống chấm thi tự động sẽ ghi đè bản gốc của giảng viên trước khi chấm. Bất kỳ chỉnh sửa nào trong hai thư mục này sẽ bị trừ 10 điểm.
+    Không commit dữ liệu và trọng số: Commit data/, khóa API (Kaggle/HF), hoặc trọng số mô hình (*.safetensors, *.bin, *.pt) sẽ bị trừ 2 điểm cho mỗi danh mục vi phạm ở Phần D.
+    Tính độc lập: Bài làm cá nhân. Giảng viên sử dụng công cụ đối chiếu chéo số liệu giữa các repository và có thể gọi vấn đáp 5 phút để xác nhận mức độ hiểu bài.
+
+
+Chuẩn bị môi trường và kiểm tra ban đầu
+1. Quy trình thiết lập Repository Git cá nhân
+Bắt buộc: Fork repository về tài khoản cá nhân trước khi clone
+
+Vì bài nộp trên hệ thống VinUni LMS yêu cầu nộp đường dẫn GitHub cá nhân ở chế độ Public, bạn thực hiện theo 2 bước:
+
+    Bước 1 — Fork repository: Nhấn vào liên kết VinUni-AI20k/K4-Track-4-Day10-VisionLanguageModel ở trên, bấm nút Fork (ở góc trên bên phải trang GitHub) để sao chép dự án về tài khoản cá nhân của bạn. Đảm bảo đặt repository ở chế độ Public (tuyệt đối không để Private vì hệ thống chấm thi sẽ không truy cập được).
+    Bước 2 — Clone repository cá nhân: Mở terminal trên máy tính và chạy lệnh git clone với đường dẫn repository trên tài khoản cá nhân của bạn (thay <your-username> bằng username GitHub thực tế của bạn):
+
+    git clone https://github.com/<your-username>/K4-Track-4-Day10-VisionLanguageModel.git
+    cd K4-Track-4-Day10-VisionLanguageModel
+
+ 
+
+(Lưu ý: Không clone trực tiếp từ VinUni-AI20k để làm bài vì bạn không có quyền ghi để đẩy mã nguồn lên kho của trường).
+2. Thiết lập môi trường trên Google Colab T4
+
+Mô hình Qwen/Qwen3-VL-4B-Instruct yêu cầu khoảng 9–12 GB VRAM khi huấn luyện QLoRA 4-bit, phù hợp tối ưu với card NVIDIA T4 16 GB trên Google Colab miễn phí.
+
+    1. Mở tệp lab_day10.ipynb trên Google Colab.
+    2. Điều hướng tới menu: Runtime → Change runtime type → chọn T4 GPU → nhấn Save.
+    3. Cài đặt các thư viện phụ thuộc theo phiên bản đã được thẩm định tính tương thích:
+
+!pip -q install -r requirements-colab.txt
+
+
+
+    1. Thiết lập Colab Secrets (biểu tượng chiếc chìa khóa ở thanh công cụ bên trái màn hình):
+
+    Thêm secret KAGGLE_USERNAME: Tên người dùng Kaggle của bạn.
+    Thêm secret KAGGLE_KEY: Khóa API token của bạn (tải từ trang cài đặt tài khoản Kaggle).
+    Nạp vào môi trường runtime mà không làm lộ khóa ra mã nguồn:
+
+import os
+from google.colab import userdata
+
+os.environ["KAGGLE_USERNAME"] = userdata.get("KAGGLE_USERNAME")
+os.environ["KAGGLE_KEY"] = userdata.get("KAGGLE_KEY")
+
+
+
+    1. Mount Google Drive để sao lưu adapter LoRA và checkpoint sau mỗi vòng chạy:
+
+from google.colab import drive
+
+drive.mount("/content/drive")
+
+
+3. Kiểm tra tính toàn vẹn của công cụ đề bài
+
+Trước khi thực hiện bất kỳ bước nào, hãy chạy toàn bộ bộ kiểm thử tự động để chắc chắn công cụ hoạt động hoàn hảo trên môi trường của bạn:
+
+python -m pytest -q
+
+
+
+Tín hiệu sẵn sàng: Màn hình hiển thị 68 passed, 1 skipped (test bỏ qua là bài kiểm tra dữ liệu thật khi chưa tải dataset).
+Bảng tra cứu toàn bộ các script điều phối trong dự án
+File	Vai trò kỹ thuật	Lưu ý khi sử dụng
+scripts/prepare_data.py	Tải dữ liệu từ Kaggle, gán session và chia split cố định	Nhận cờ --kaggle, --zip <path> hoặc --source <dir>. Không sửa file này.
+scripts/score.py	Trọng tài đánh giá: parse JSON, tính IoU, Precision, Recall, F1 và Bootstrap CI95	Nhận file predictions.jsonl, cờ --split test, --meta và xuất ra report/evidence/*.json.
+scripts/check_submission.py	Công cụ tự kiểm tra điều kiện nghiệm thu trước khi nộp bài	Quét toàn bộ bằng chứng, metadata, commit git, file cấm và nội dung REPORT.md.
+scripts/splitting.py	Thuật toán băm SHA256 chia ảnh theo phiên quay cố định	Đảm bảo tính tái lập (reproducible) cho toàn bộ học viên.
+scripts/labcommon.py	Định nghĩa danh sách nhãn CLASSES và hàm đọc/ghi file .jsonl	Chứa 3 lớp: ("pothole", "crack", "manhole").
+configs/e0.yaml–e5.yaml	Tệp cấu hình siêu tham số chuẩn cho từng thí nghiệm E0 đến E5	Định nghĩa batch size, learning rate, số bước, targets LoRA.
+
+
+Chặng 1 — Phân chia Dữ liệu và Phòng chống Rò rỉ theo Phiên quay
+Bản chất và vấn đề cần giải quyết
+
+Tập dữ liệu sử dụng trong bài là Road Damage Dataset (Arcioni, 2025) gồm 2.009 ảnh JPG kích thước 640 × 360 và 4.737 bounding box gán nhãn theo định dạng YOLO chuẩn hoá [0, 1].
+
+Toàn bộ ảnh trong tập dữ liệu thực chất là các khung hình (frame) được cắt ra từ video hành trình (dashcam) di chuyển trên đường phố. Một đặc điểm tự nhiên của video là tốc độ khung hình cao: hai frame liên tiếp cách nhau 0.5–1 giây gần như trùng khít nhau về bối cảnh, góc camera, điều kiện ánh sáng và ổ gà trên đường.
+Nguy cơ rò rỉ dữ liệu khi chia ngẫu nhiên (Random Split)
+
+Một phiên quay video (Cùng con đường, cách nhau 0.5s)
+
+Chia ngẫu nhiên
+
+Rò rỉ hình ảnh!
+
+Học vẹt bối cảnh
+
+Frame 1: Ổ gà A
+
+Frame 2: Ổ gà A (dịch 1cm)
+
+Frame 3: Ổ gà A (dịch 2cm)
+
+Tập Huấn luyện (Train)
+
+Tập Kiểm thử (Test)
+
+Nếu áp dụng phương pháp chia ngẫu nhiên (random splitting) truyền thống:
+
+    1. Rò rỉ dữ liệu nghiêm trọng (Data Leakage): Frame 1 nằm ở tập Train trong khi Frame 2 nằm ở tập Test.
+    2. F1 cao giả tạo: Mô hình không học cách tổng quát hóa để nhận diện ổ gà mới, mà chỉ đơn thuần "nhớ" bối cảnh của chiếc xe hơi đi phía trước hoặc mảng vỉa hè quen thuộc. Khi triển khai trên một cung đường hoàn toàn mới, hiệu năng thực tế sẽ sụp đổ.
+
+Để giải quyết triệt để vấn đề này, kịch bản scripts/prepare_data.py thực hiện gom toàn bộ ảnh theo phiên quay (session) dựa trên tiền tố ngày giờ trong tên file, và gán nguyên cả phiên vào một split duy nhất.
+Giải nghĩa từ khóa chuyên môn
+
+    Session Key (Mã phiên quay): Chuỗi nhận dạng duy nhất cho một chuỗi ghi hình liên tục. Ví dụ, ảnh vlcsnap-2025-02-18-23h08m14s528.jpg được quy về phiên vlc-2025-02-18-23 (phiên quay lúc 23h ngày 18/02/2025).
+    Deterministic Splitting (Phân chia tất định): Thuật toán sắp xếp các phiên bằng mã băm SHA256 kết hợp hạt giống seed="day10" và số salt. Mọi học viên chạy trên máy tính nào cũng sinh ra phân bổ split giống hệt nhau, đảm bảo tính công bằng khi chấm điểm.
+    Phân bố lớp lệch (Class Imbalance across Splits): Do gom theo phiên quay thực tế, phân bố số lượng vật thể giữa các split sẽ không đồng đều. Ví dụ: tập val chỉ có 66 box pothole trong khi tập train có 1.074 box. Đây là tình huống dữ liệu thực tế đòi hỏi kỹ sư phải đánh giá F1 riêng cho từng lớp và đo khoảng tin cậy.
+
+Các bước thực hiện chi tiết
+
+    1. Chạy lệnh chuẩn bị dữ liệu trong notebook hoặc terminal:
+
+python scripts/prepare_data.py --kaggle
+
+
+
+(Trường hợp không dùng Kaggle CLI: Tải zip dataset về máy và chạy python scripts/prepare_data.py --zip <đường_dẫn_zip>).
+
+    1. Kịch bản sẽ sinh ra cấu trúc thư mục chuẩn:
+
+    data/images/: Chứa 2.009 ảnh JPG.
+    data/splits/train.jsonl: 1.422 ảnh huấn luyện.
+    data/splits/val.jsonl: 276 ảnh kiểm tra (dùng để gỡ lỗi).
+    data/splits/test.jsonl: 311 ảnh kiểm thử chính thức (dùng để chấm điểm).
+    data/splits/meta.json: Chứa chữ ký dataset_version và thống kê phân bổ.
+
+    1. Đọc dữ liệu và hiển thị trực quan 6 ảnh mẫu kèm bounding box gốc:
+
+import json
+from PIL import Image, ImageDraw
+from scripts.labcommon import read_jsonl
+
+train_samples = read_jsonl("data/splits/train.jsonl")
+print(f"Tổng số ảnh train: {len(train_samples)}")
+# Vẽ box kiểm tra nhãn ...
+
+
+Tín hiệu kiểm chứng và chuyển pha
+
+    Kiểm tra file data/splits/meta.json có dataset_version bắt đầu bằng tiền tố d10- (ví dụ d10-21e4070301).
+    Số lượng ảnh và box khớp chính xác với bảng sau:
+
+Split	Số lượng ảnh	Pothole (ổ gà)	Crack (nứt)	Manhole (nắp cống)
+Train	1.422	1.074	1.750	691
+Val	276	66	470	103
+Test	311	121	299	163
+
+    Xác nhận không có bất kỳ session nào xuất hiện đồng thời ở hai split khác nhau. Sau khi hoàn thành, bạn thực hiện Commit Git #1.
+
+
+Chặng 2 — Định dạng Nhãn Grounding và Đánh giá Baseline E0 Zero-shot
+Bản chất và vấn đề cần giải quyết
+
+Mô hình Vision-Language Model như Qwen3-VL không sinh ra các tensor toạ độ thông qua tầng hồi quy như YOLO hay Faster R-CNN, mà sinh ra toạ độ dưới dạng các token từ vựng văn bản (textual tokens).
+
+Để mô hình hiểu và sinh toạ độ ổn định:
+
+    1. Thang đo chuẩn hoá 0–1000: Qwen3-VL sử dụng quy ước biểu diễn toạ độ bằng số nguyên trong đoạn [0, 1000], đại diện cho tỷ lệ phần nghìn của chiều rộng và chiều cao ảnh. Việc dùng thang đo chuẩn hoá giúp mô hình học được mối tương quan không gian mà không bị phụ thuộc vào độ phân giải tuyệt đối của từng bức ảnh.
+    2. Thứ tự sinh box tất định (Deterministic Ordering): Nếu trong một bức ảnh có nhiều hư hại mà thứ tự xuất hiện của chúng bị xáo trộn ngẫu nhiên giữa các mẫu, mô hình autoregressive sẽ bị nhiễu loạn khi dự đoán token tiếp theo. Do đó, các bounding box phải được sắp xếp cố định theo thứ tự từ trên xuống dưới, từ trái sang phải: ưu tiên y1 tăng dần, sau đó đến x1 tăng dần.
+
+Giải nghĩa từ khóa chuyên môn
+
+    Visual Grounding: Nhiệm vụ liên kết ngôn ngữ tự nhiên với vùng không gian tương ứng trong ảnh. Đầu ra grounding của Qwen3-VL là nhãn lớp kết hợp mảng 4 phần tử [x1, y1, x2, y2].
+    BitsAndBytes NF4 (NormalFloat4): Phương pháp lượng tử hóa thông tin 4-bit tối ưu lý thuyết cho các trọng số mạng nơ-ron phân phối chuẩn, giúp nén LLM từ 16-bit xuống 4-bit mà không làm suy giảm đáng kể năng lực suy luận.
+    Skip Modules (llm_int8_skip_modules): Cờ cấu hình sống còn trong BitsAndBytes:
+
+llm_int8_skip_modules = ["visual", "lm_head"]
+
+
+Giữ nguyên khối thị giác ViT, Projector và đầu ra lm_head ở định dạng dấu phẩy động 16-bit (fp16). Nếu để BitsAndBytes lượng tử hoá cả ViT, các trọng số của Projector sẽ bị khoá ở dạng 4-bit và hoàn toàn không thể mở ra để huấn luyện gradient ở các thí nghiệm E2 và E3.
+Các bước thực hiện chi tiết
+
+    1. Viết hàm chuyển đổi nhãn từ YOLO sang Grounding JSON thang 0–1000 trong notebook:
+
+import json
+
+
+def yolo_to_box(label: str, yolo: list[float]) -> dict:
+  xc, yc, w, h = yolo  # Chuẩn hoá [0, 1]
+  x1 = int(round(max(0.0, min(1000.0, (xc - w / 2) * 1000))))
+  y1 = int(round(max(0.0, min(1000.0, (yc - h / 2) * 1000))))
+  x2 = int(round(max(0.0, min(1000.0, (xc + w / 2) * 1000))))
+  y2 = int(round(max(0.0, min(1000.0, (yc + h / 2) * 1000))))
+  if x2 <= x1:
+    x2 = min(1000, x1 + 1)
+  if y2 <= y1:
+    y2 = min(1000, y1 + 1)
+  return {"label": label, "bbox_2d": [x1, y1, x2, y2]}
+
+
+def objects_to_answer(objects: list[dict]) -> str:
+  boxes = [yolo_to_box(o["label"], o["yolo"]) for o in objects]
+  # Sắp xếp ổn định: trên -> dưới (y1), trái -> phải (x1)
+  boxes.sort(key=lambda b: (b["bbox_2d"][1], b["bbox_2d"][0]))
+  return json.dumps(boxes, separators=(",", ":"))
+
+
+
+    1. Soạn thảo Prompt chuẩn cho mô hình:
+
+PROMPT = (
+    "Locate road damage in this image. "
+    "Detect only objects of classes: pothole, crack, manhole. "
+    "Output a JSON list of objects with label and bbox_2d coordinates "
+    "normalized on a 0-1000 scale: "
+    '[{"label": "...", "bbox_2d": [x1, y1, x2, y2]}]. '
+    "If no damage is found, output []."
+)
+
+
+
+    1. Nạp mô hình gốc Qwen/Qwen3-VL-4B-Instruct với cấu hình QLoRA 4-bit và chạy suy luận Zero-shot (E0) trên toàn bộ 311 ảnh tập test:
+
+import torch
+from transformers import (
+    AutoProcessor,
+    BitsAndBytesConfig,
+    Qwen3VLForConditionalGeneration,
+)
+
+quantization = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True,
+    llm_int8_skip_modules=["visual", "lm_head"],
+)
+model = Qwen3VLForConditionalGeneration.from_pretrained(
+    "Qwen/Qwen3-VL-4B-Instruct",
+    quantization_config=quantization,
+    device_map="auto",
+)
+processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-4B-Instruct")
+processor.tokenizer.padding_side = "left"
+
+# Chạy inference trên tập test và lưu work/e0.jsonl ...
+
+
+
+    1. Chấm điểm E0 bằng kịch bản trọng tài của đề bài:
+
+python scripts/score.py --pred work/e0.jsonl --name E0 --out report/evidence/e0.json
+
+
+Tín hiệu kiểm chứng và chuyển pha
+
+    Sinh thành công file report/evidence/e0.json với score_version: 1, split: "test".
+    Quan sát đầu ra của E0:
+    Tỷ lệ parse_valid_rate: Mô hình gốc chưa finetune thường trả về văn bản hội thoại dài dòng ("Based on the image..."), có thể bọc markdown hoặc không tuân thủ cấu trúc JSON thuần.
+    Điểm F1 của E0 thường rất thấp (< 0.10), do mô hình không hiểu đúng phân bố 3 lớp chuyên biệt và thang đo 0–1000 của bài toán.
+    Ghi lại các phát hiện này để chuẩn bị trả lời Câu 2 trong báo cáo. Thực hiện Commit Git #2.
+
+Chặng 3 — Chat Template và Mask Loss Autoregressive
+Bản chất và vấn đề cần giải quyết
+
+Trong quá trình huấn luyện mô hình ngôn ngữ thị giác đa phương thức, chuỗi đầu vào được ghép từ nhiều nguồn token:
+
+    1. Các token biểu diễn ảnh: Được trích xuất từ ViT qua phép chia mảnh (patchify) và chiếu đặc trưng.
+    2. Các token của câu lệnh (User Prompt): Hướng dẫn nhiệm vụ và định dạng đầu ra.
+    3. Các token của câu trả lời (Assistant Answer): Chuỗi JSON đích chứa toạ độ bounding box.
+
+Cơ chế Mask Loss -100 chỉ học câu trả lời của Assistant
+
+Chuỗi Token Đầu Vào Đầy Đủ (~300+ tokens)
+
+Gán nhãn -100
+
+Gán nhãn -100
+
+Giữ nguyên token ID
+
+Visual Tokens
+(220 tokens ảnh 640x360)
+
+User Prompt Tokens
+(~60 tokens câu hỏi)
+
+Assistant Answer Tokens
+(~40 tokens JSON toạ độ)
+
+Không tính Cross-Entropy Loss
+
+Không tính Cross-Entropy Loss
+
+TÍNH LOSS HUẤN LUYỆN (100% Gradient)
+
+Nếu lập trình viên tính loss trên toàn bộ chuỗi:
+
+    220 visual tokens và 60 prompt tokens chiếm tới hơn 85% chiều dài chuỗi.
+    Mô hình sẽ lãng phí phần lớn ngân sách gradient để học cách "tái tạo lại bức ảnh" hoặc "học thuộc lòng câu prompt của hệ thống".
+    Khả năng sinh toạ độ JSON chính xác bị phân tán nghiêm trọng, khiến mô hình không thể hội tụ.
+
+Giải pháp bắt buộc là sử dụng Loss Masking: gán giá trị nhãn -100 (giá trị bỏ qua mặc định của PyTorch CrossEntropyLoss) cho toàn bộ các token thuộc phần ảnh và prompt, chỉ giữ lại nhãn cho các token thuộc câu trả lời của Assistant.
+Giải nghĩa từ khóa chuyên môn
+
+    220 Visual Tokens: Đối với ảnh kích thước 640 × 360, Vision Transformer của Qwen3-VL áp dụng cửa sổ patch 14 × 14 kết hợp cơ chế gộp không gian (spatial merging 2 × 2), nén toàn bộ khung hình ảnh thành đúng 220 token thị giác.
+    Chat Template: Quy tắc bao đóng hội thoại của mô hình bằng các token đặc biệt (<|im_start|>user, <|im_end|>, <|im_start|>assistant).
+    Multimodal Collation: Khác với tensor chữ viết có thể đệm (padding) bằng số 0, các tensor thị giác (pixel_values và image_grid_thw) phải được nối liên tiếp (concatenate dọc theo chiều 0), tuyệt đối không được pad.
+
+Các bước thực hiện chi tiết
+
+    1. Hiện thực hàm mã hóa mẫu dữ liệu và mask loss:
+
+def encode_example(image, prompt, answer, processor):
+  user_msg = [
+      {
+          "role": "user",
+          "content": [
+              {"type": "image", "image": image},
+              {"type": "text", "text": prompt},
+          ],
+      }
+  ]
+  full_msg = user_msg + [{"role": "assistant", "content": answer}]
+
+  prompt_enc = processor.apply_chat_template(
+      user_msg,
+      tokenize=True,
+      add_generation_prompt=True,
+      return_dict=True,
+      return_tensors="pt",
+  )
+  full_enc = processor.apply_chat_template(
+      full_msg,
+      tokenize=True,
+      add_generation_prompt=False,
+      return_dict=True,
+      return_tensors="pt",
+  )
+
+  n_prompt = prompt_enc.input_ids.shape[1]
+  # Kiểm tra tiền tố bảo đảm tính nhất quán
+  assert (full_enc.input_ids[0, :n_prompt] == prompt_enc.input_ids[0]).all()
+
+  # Tạo nhãn và mask toàn bộ phần prompt/ảnh bằng -100
+  labels = full_enc.input_ids.clone()
+  labels[0, :n_prompt] = -100
+
+  return {
+      "input_ids": full_enc.input_ids[0],
+      "attention_mask": full_enc.attention_mask[0],
+      "pixel_values": full_enc.pixel_values,
+      "image_grid_thw": full_enc.image_grid_thw,
+      "labels": labels[0],
+  }
+
+
+
+    1. Hiện thực hàm gom nhóm lô (Collate Function):
+
+def collate_fn(batch, pad_token_id=151643):
+  input_ids = torch.nn.utils.rnn.pad_sequence(
+      [b["input_ids"] for b in batch],
+      batch_first=True,
+      padding_value=pad_token_id,
+  )
+  attention_mask = torch.nn.utils.rnn.pad_sequence(
+      [b["attention_mask"] for b in batch], batch_first=True, padding_value=0
+  )
+  labels = torch.nn.utils.rnn.pad_sequence(
+      [b["labels"] for b in batch], batch_first=True, padding_value=-100
+  )
+
+  # Nối tensor ảnh, KHÔNG padding
+  pixel_values = torch.cat([b["pixel_values"] for b in batch], dim=0)
+  image_grid_thw = torch.cat([b["image_grid_thw"] for b in batch], dim=0)
+
+  return {
+      "input_ids": input_ids,
+      "attention_mask": attention_mask,
+      "labels": labels,
+      "pixel_values": pixel_values,
+      "image_grid_thw": image_grid_thw,
+  }
+
+
+Tín hiệu kiểm chứng và chuyển pha
+
+    Kiểm tra số lượng token thị giác của 1 ảnh 640 × 360: tensor image_grid_thw cho thấy tích số tương ứng tạo ra đúng 220 token.
+    Giải mã ngược (decode) các token có labels != -100: Kết quả in ra màn hình phải là chuỗi JSON đáp án chuẩn kết thúc bằng token <|im_end|>.
+    Hoàn thành kiểm tra và thực hiện Commit Git #3.
+
+
+Chặng 4 — Các Thí nghiệm Finetune E1, E2, E3 (LoRA LLM, Projector, LoRA ViT)
+Bản chất và vấn đề cần giải quyết
+
+Một câu hỏi kiến trúc cốt lõi trong Vision-Language Model là: Khi tinh chỉnh cho một bài toán thị giác chuyên biệt (như phát hiện ổ gà), khối nào cần được cập nhật trọng số?
+
+Mô hình Qwen3-VL-4B gồm 3 thành phần chính:
+
+    1. Vision Transformer (ViT): Trích xuất đặc trưng thị giác từ ảnh (≈ 415M tham số).
+    2. Projector / Merger: Khối ánh xạ vector từ không gian ViT sang không gian nhúng của LLM. Trong Qwen3-VL, khối này gồm visual.merger (≈ 27M tham số) và visual.deepstack_merger_list (≈ 82M tham số, kết nối sâu từ các lớp 5, 11, 17 của ViT) → Tổng cộng ≈ 109M tham số.
+    3. Large Language Model (LLM): Xử lý suy luận ngôn ngữ và sinh token toạ độ (≈ 4.0B tham số).
+
+Chúng ta thiết kế 3 thí nghiệm đối chứng có kiểm soát để trả lời câu hỏi trên:
+
+    E1: Chỉ cập nhật LoRA trên LLM (252 modules). Đóng băng hoàn toàn ViT và Projector.
+    E2: Cấu hình E1 + Mở huấn luyện đầy đủ Projector (109M tham số đưa về float32).
+    E3: Cấu hình E2 + Bổ sung LoRA trên các khối Attention và MLP của ViT (thêm 96 modules LoRA).
+
+So sánh các khối được cập nhật trong E1, E2, E3
+
+Thí nghiệm E3
+
+ViT: LoRA (96 modules)
+
+Projector: MỞ FULL (Float32)
+
+LLM: LoRA (252 modules)
+
+Thí nghiệm E2
+
+ViT: Đóng băng
+
+Projector: MỞ FULL (Float32)
+
+LLM: LoRA (252 modules)
+
+Thí nghiệm E1
+
+ViT: Đóng băng
+
+Projector: Đóng băng
+
+LLM: LoRA (252 modules)
+
+Kiến trúc Qwen3-VL-4B (~4.44B tham số)
+
+Vision Transformer (415M)
+
+Projector & DeepStack (109M)
+
+Language Model Core (4.0B)
+Giải nghĩa từ khóa chuyên môn
+
+    DeepStack Merger: Kỹ thuật trích xuất đặc trưng đa tầng trong Qwen3-VL. Thay vì chỉ lấy vector ở lớp cuối cùng của ViT, mô hình trích xuất đặc trưng ở cả tầng nông và tầng trung gian (lớp 5, 11, 17), giúp bảo toàn thông tin chi tiết về các vật thể nhỏ (rất quan trọng đối với ổ gà và vết nứt có diện tích chỉ ≈ 0.7% khung hình).
+    Float32 Projector: Các tham số của merger phải được ép kiểu về torch.float32 khi huấn luyện. Nếu để ở fp16, việc tích luỹ gradient qua nhiều tầng DeepStack rất dễ gây hiện tượng tràn số (numerical underflow/overflow), dẫn đến Loss = nan.
+    Cạm bẫy lưu trữ Projector: Khi dùng thư viện PEFT, lệnh model.save_pretrained() chỉ lưu adapter LoRA. Projector là tham số gốc được mở requires_grad=True, do đó bắt buộc phải lưu riêng ra file .pt. Nếu quên, khi suy luận bạn sẽ nạp lại Projector gốc chưa huấn luyện, khiến kết quả E2/E3 bị kéo tụt về giống hệt E1!
+
+Các bước thực hiện chi tiết
+
+    1. Hàm cấu hình LoRA và đóng băng cho từng setup:
+
+from peft import LoraConfig, get_peft_model
+
+
+def apply_setup(model, setup_name: str):
+  for p in model.parameters():
+    p.requires_grad = False
+  model.enable_input_require_grads()
+
+  # 1. Mục tiêu LoRA
+  target_modules = [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj",
+  ]
+  if setup_name == "E3":
+    target_modules += ["qkv", "linear_fc1", "linear_fc2"]
+
+  lora_config = LoraConfig(
+      r=16,
+      lora_alpha=32,
+      lora_dropout=0.05,
+      target_modules=target_modules,
+      bias="none",
+      task_type="CAUSAL_LM",
+  )
+  peft_model = get_peft_model(model, lora_config)
+
+  # 2. Mở Projector cho E2 và E3
+  if setup_name in ["E2", "E3"]:
+    for name, param in peft_model.named_parameters():
+      if "visual.merger" in name or "visual.deepstack_merger_list" in name:
+        param.data = param.data.to(torch.float32)
+        param.requires_grad = True
+
+  return peft_model
+
+
+
+    1. Thiết lập vòng lặp huấn luyện chuẩn 300 bước:
+
+    Optimizer: AdamW(trainable_params, lr=2e-4, weight_decay=0).
+    Scheduler: Warmup 5% đầu, sau đó giảm theo Cosine về 0.
+    Batch size: 2 ảnh, tích luỹ gradient qua 4 bước (Effective batch = 8).
+    Kích hoạt gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False}).
+    Đặt model.config.use_cache = False.
+
+    1. Lưu trọng số và siêu dữ liệu sau khi train:
+
+# Lưu adapter
+model.save_pretrained(f"work/{setup_name}_adapter")
+
+# Lưu Projector nếu là E2 hoặc E3
+if setup_name in ["E2", "E3"]:
+  projector_weights = {
+      k: v.cpu()
+      for k, v in model.named_parameters()
+      if "visual.merger" in k or "visual.deepstack_merger_list" in k
+  }
+  torch.save(projector_weights, f"work/{setup_name}_projector.pt")
+
+
+
+    1. Suy luận trên 311 ảnh test và chạy lệnh chấm điểm kèm metadata:
+
+python scripts/score.py --pred work/e1.jsonl --name E1 --out report/evidence/e1.json \
+    --meta trainable_params=28311552 --meta peak_vram_gb=9.5 --meta train_minutes=24.0
+
+python scripts/score.py --pred work/e2.jsonl --name E2 --out report/evidence/e2.json \
+    --meta trainable_params=137359360 --meta peak_vram_gb=11.2 --meta train_minutes=28.5
+
+python scripts/score.py --pred work/e3.jsonl --name E3 --out report/evidence/e3.json \
+    --meta trainable_params=156233728 --meta peak_vram_gb=13.8 --meta train_minutes=34.2
+
+
+Tín hiệu kiểm chứng và chuyển pha
+
+    File report/evidence/e1.json đạt: parse_valid_rate >= 0.95 và điểm F1(E1) - F1(E0) ≥ 0.10.
+    Các file e1.json, e2.json, e3.json đều có đầy đủ trường meta với 3 chỉ số dương.
+    Điền các kết quả vào Bảng tổng hợp của REPORT.md. Thực hiện Commit Git #4.
+
+Chặng 5 — Thí nghiệm Phân rã Đơn biến E4 (Ablation Study)
+Bản chất và vấn đề cần giải quyết
+
+Trong nghiên cứu khoa học, một thí nghiệm kiểm chứng (Ablation Study) chỉ có giá trị khi bạn thay đổi đúng một biến số duy nhất so với cấu hình gốc tối ưu, giữ nguyên toàn bộ các tham số còn lại. Nếu thay đổi đồng thời cả rank và learning rate, bạn sẽ không thể kết luận yếu tố nào tạo ra sự thay đổi về điểm số.
+
+Trong E4, bạn chọn ĐÚNG MỘT trong ba biến số sau:
+
+    1. Biến rank: Thử nghiệm độ rộng không gian thích ứng LoRA với r = 4 (alpha = 8) và r = 64 (alpha = 128).
+    2. Biến data_size: Đánh giá hiệu quả dữ liệu với 10% tập train (142 ảnh) so với 100% tập train (1.422 ảnh).
+    3. Biến coord_scale: So sánh giữa toạ độ chuẩn hoá norm1000 và toạ độ pixel tuyệt đối (đổi prompt, đổi hàm encode và chấm bằng --coord pixel).
+
+Các bước thực hiện chi tiết
+
+    1. Chọn một biến số (khuyến nghị thực tế: chọn data_size hoặc rank để giữ nguyên quy ước toạ độ).
+    2. Chạy huấn luyện và đánh giá trên tập test cho cả 2 giá trị của biến số đã chọn.
+    3. Xuất file bằng chứng theo quy ước đặt tên:
+
+    Nếu chọn rank: report/evidence/e4_rank_4.json và report/evidence/e4_rank_64.json.
+    Nếu chọn data_size: report/evidence/e4_data_0.1.json và report/evidence/e4_data_1.0.json.
+    Nếu chọn coord: report/evidence/e4_coord_norm1000.json và report/evidence/e4_coord_pixel.json.
+
+    1. Quan sát khoảng tin cậy CI95: Vì tập test chỉ có 311 ảnh, khoảng tin cậy bootstrap thường có độ rộng khoảng ±0.04 – 0.06. Bạn cần phân tích xem khoảng CI95 giữa hai giá trị có bị giao nhau (overlap) hay không để đưa ra kết luận trung thực cho Câu 10.
+    2. Thực hiện Commit Git #5.
+
+
+Chặng 6 — Thử thách Thưởng E5 (+10 điểm): GRPO với Reward IoU
+Bản chất và vấn đề cần giải quyết
+
+Huấn luyện có giám sát (SFT) dạy mô hình bắt chước phân bố token của nhãn, nhưng không trực tiếp tối ưu hóa mục tiêu hình học của bài toán là chỉ số IoU (Intersection over Union).
+
+Trong thí nghiệm E5, bạn áp dụng thuật toán Group Relative Policy Optimization (GRPO) — phương pháp học tăng cường hiện đại được sử dụng để huấn luyện DeepSeek-R1. Với mỗi ảnh đầu vào, mô hình sinh ra một nhóm gồm 4 phương án dự đoán (num_generations=4), sau đó tính phần thưởng cho từng phương án dựa trên chất lượng bounding box so với ground truth để cập nhật chính sách mà không cần mạng Critic (Value Network) cồng kềnh.
+Quy trình tính hàm thưởng kiểm chứng được (Verifiable IoU Reward)
+
+Không
+
+Có
+
+Output sinh ra từ mô hình
+
+Parse JSON hợp lệ?
+
+Reward = 0.0 (Phạt định dạng)
+
+Ghép cặp Greedy theo IoU giảm dần (Cùng class, IoU >= 0.5)
+
+Tổng IoU các cặp khớp
+
+Reward = 0.2 + 0.8 * (Tổng IoU) / max(Số GT, Số Pred, 1)
+
+Phần thưởng [0.2, 1.0]
+Hiện tượng Hack phần thưởng (Reward Hacking)
+
+Nếu hàm reward thiết kế không chặt chẽ, mô hình sẽ tìm ra "đường tắt" để tối đa hóa điểm thưởng mà không thực sự phát hiện đúng vật thể:
+
+    Chiến thuật trả về rỗng []: Nếu ảnh không có hư hại và mô hình đoán [], thưởng nhận được là 1.0. Nếu hàm thưởng quá dễ dãi, mô hình sẽ lười biếng trả về [] cho mọi ảnh.
+    Chiến thuật bao trùm (Giant Box): Sinh ra một box khổng lồ chiếm trọn màn hình [0, 0, 1000, 1000] để hy vọng ăn điểm IoU với mọi box nhỏ.
+    Biện pháp ngăn chặn: Mẫu số max(N_gt, N_pred, 1) sẽ phạt nặng mọi box thừa sinh ra, đồng thời ngưỡng IoU ≥ 0.5 lập tức triệt tiêu điểm của các box khổng lồ có diện tích quá chênh lệch.
+
+Các bước thực hiện chi tiết
+
+    1. Viết hàm thưởng và bộ kiểm thử đơn vị độc lập:
+
+from scripts.score import iou_xyxy, parse_output
+
+
+def compute_reward(completion: str, gt_boxes: list[dict]) -> float:
+  pred = parse_output(completion)
+  if pred is None:
+    return 0.0  # JSON hỏng
+  if not gt_boxes and not pred:
+    return 1.0  # Cả hai cùng rỗng
+
+  total_iou = 0.0
+  all_labels = {g["label"] for g in gt_boxes} | {p["label"] for p in pred}
+  for lab in all_labels:
+    g = [x["bbox"] for x in gt_boxes if x["label"] == lab]
+    p = [x["bbox"] for x in pred if x["label"] == lab]
+    pairs = sorted(
+        (
+            (iou_xyxy(a, b), i, j)
+            for i, a in enumerate(g)
+            for j, b in enumerate(p)
+        ),
+        reverse=True,
+    )
+    used_g, used_p = set(), set()
+    for v, i, j in pairs:
+      if v < 0.5:
+        break
+      if i in used_g or j in used_p:
+        continue
+      used_g.add(i)
+      used_p.add(j)
+      total_iou += v
+
+  denom = max(len(gt_boxes), len(pred), 1)
+  return 0.2 + 0.8 * (total_iou / denom)
+
+
+    1. Viết unit test xác nhận hàm thưởng đạt 5/5 ca kiểm thử: Hoàn hảo (1.0), JSON hỏng (0.0), Sai nhãn (0.2), Thừa box (0.6), Cùng rỗng (1.0).
+    2. Sử dụng trl.GRPOTrainer (phiên bản trl==1.9.2) khởi tạo từ adapter tốt nhất của E1–E3, chạy khoảng 60 bước với learning_rate=5e-6.
+    3. Xuất kết quả ra report/evidence/e5.json và phân tích sự thay đổi F1 so với SFT.
+
+Xử lý sự cố và lỗi thường gặp (Troubleshooting)
+
+Bảng tổng hợp các triệu chứng lỗi thực tế và giải pháp xử lý triệt để:
+Triệu chứng lỗi	Nguyên nhân gốc rễ	Lệnh / Cách xử lý
+CUDA out of memory trên Colab	Batch size quá lớn hoặc quên bật gradient checkpointing	Đặt batch_size=1, gradient_accumulation_steps=8, bật model.gradient_checkpointing_enable().
+Loss báo nan hoặc inf	Tràn số khi tính toán hỗn hợp fp16 trên Projector	Giảm learning rate xuống 1e-4, ép kiểu các tham số của Projector sang float32.
+F1 của E2 và E3 bằng đúng E1	Quên lưu hoặc quên nạp lại trọng số Projector khi suy luận	Bắt buộc lưu riêng extra_projector.pt bằng torch.save và nạp lại trước khi chạy inference test.
+parse_valid_rate thấp (< 0.90)	Mô hình sinh lặp vô hạn hoặc thiếu token kết thúc <im_end>	Tăng max_new_tokens=256, kiểm tra lại token kết thúc trong hàm encode_example.
+F1 ≈ 0 dù JSON hợp lệ	Nhầm lẫn giữa thang toạ độ pixel và thang toạ độ 0–1000	Kiểm tra hàm yolo_to_box nhân với 1000. Nếu chạy E4 pixel, phải truyền --coord pixel vào score.py.
+UnicodeEncodeError trên Windows	Console Windows mặc định dùng bảng mã cp1252	Chạy $env:PYTHONIOENCODING="utf-8" trên PowerShell hoặc chcp 65001 trước khi chạy script.
+prepare_data.py báo thiếu CLI	Chưa cài đặt thư viện kaggle hoặc chưa cấu hình API	Cài pip install kaggle và thiết lập biến môi trường KAGGLE_USERNAME, KAGGLE_KEY.
+Bị ngắt kết nối session Colab	Hết hạn phiên Google Colab miễn phí	Luôn mount Google Drive và sao lưu adapter sang Drive sau mỗi 100 bước huấn luyện.
+
+Kiểm tra toàn diện và nộp bài
+1. Kiểm tra tự động bằng lệnh nghiệm thu
+
+Mở terminal tại thư mục gốc của repository và thực thi lệnh kiểm tra:
+
+python scripts/check_submission.py
+
+
+
+(Trên Windows PowerShell, chạy kèm biến mã hóa: $env:PYTHONIOENCODING="utf-8"; python scripts/check_submission.py).
+
+Bạn chỉ được phép nộp bài khi kết quả in ra đạt 0 FAIL:
+
+[PASS] evidence e0
+[PASS] evidence e1
+[PASS] evidence e2
+[PASS] evidence e3
+[PASS] evidence e4 — 2 file
+[PASS] e1 meta
+[PASS] e2 meta
+[PASS] e3 meta
+[PASS] dataset_version nhất quán
+[PASS] khớp data/splits/meta.json
+[PASS] REPORT.md đã điền
+[PASS] git commits — 6/5
+[PASS] git forbidden files
+
+0 FAIL, 0 WARN
+
+
+2. Quy định đóng gói hồ sơ bài nộp
+
+Hồ sơ bài nộp trên GitHub cá nhân phải có cấu trúc như sau:
+
+K4-Track-4-Day10-VisionLanguageModel/
+├── report/
+│   └── evidence/
+│       ├── e0.json
+│       ├── e1.json
+│       ├── e2.json
+│       ├── e3.json
+│       └── e4_*.json
+├── REPORT.md                  # Đã điền đủ bảng và 10 câu hỏi bằng số liệu thật
+├── lab_day10.ipynb            # Hoặc mã nguồn Python bạn tự viết
+├── CHECKLIST.md               # Danh mục kiểm tra tiến độ
+├── BAO_CAO_LOI_VA_LUU_Y.md   # Báo cáo các bẫy kỹ thuật
+├── configs/                   # Giữ nguyên cấu hình đề bài
+├── scripts/                   # GIỮ NGUYÊN BẢN GỐC (Không sửa)
+└── tests/                     # GIỮ NGUYÊN BẢN GỐC (Không sửa)
+
+
+Danh mục rà soát trước khi đẩy code lên GitHub
+0/5
+
+    File `REPORT.md` đã điền đầy đủ họ tên, `dataset_version`, bảng tổng hợp số liệu và 10 câu hỏi.
+    Tuyệt đối **không còn bất kỳ chuỗi `<điền>` nào** trong `REPORT.md`.
+    Đã đính kèm ít nhất **6 ảnh minh họa** trực quan hoá box dự đoán và box đúng.
+    Lệnh `git status` xác nhận không có file cấm nào bị track: không có `data/`, không có `work/`, không có `.env`, không có file trọng số `*.safetensors`/`*.pt`.
+    Lệnh `git rev-list --count HEAD` trả về kết quả ≥ 5 commits.
+
+3. Đẩy mã nguồn lên GitHub và nộp bài trên LMS
+
+    1. Lưu thay đổi và đẩy toàn bộ mã nguồn lên repository cá nhân:
+
+git add -A
+git commit -m "Hoàn thành Lab Day 10 — <Họ Tên>"
+git push origin main
+
+
+
+    1. Đặt trạng thái repository trên GitHub là Public (Repository ở trạng thái Private sẽ bị hệ thống chấm điểm tự động chấm 0 điểm).
+    2. Sao chép và dán liên kết public GitHub URL (https://github.com/<your-username>/K4-Track-4-Day10-VisionLanguageModel) vào ô nộp bài của Day 10 trên hệ thống VinUni LMS. Giữ repository ở trạng thái public cho đến khi điểm số chính thức được công bố.
+    3. Ôn tập kỹ các kiến thức cốt lõi (luồng ViT → Projector → LLM, cơ chế mask loss, lý do mở projector float32, rò rỉ dữ liệu video) để sẵn sàng cho phần vấn đáp 5 phút.
